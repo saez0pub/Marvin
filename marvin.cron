@@ -1,0 +1,2 @@
+#minute hour day month weekday [username] command
+*/5 * * * * root /srv/ircbot/marvin/marvin.sh restartifneeded >> /tmp/last_restartifneeded.log
