@@ -9,29 +9,31 @@ import configparser
 import json
 from random import randint
 import os
-import codecs
+import sys
 
  
 class Bot(irc.bot.SingleServerIRCBot):
   def __init__(self):
-    path = os.getcwd()
-    self.configfile = path + "/Marvin.cfg"
     self.config = configparser.ConfigParser()
     self.getConfig()
-    irc.bot.SingleServerIRCBot.__init__(self, [("ircserver", 6667)],
+    irc.bot.SingleServerIRCBot.__init__(self, [("irc.srvc.cvf", 6667)],
                                        self.conf['nick'], "Je suis un bot super sympa.")
     irc.client.ServerConnection.buffer_class = irc.buffer.LenientDecodingLineBuffer
+    self.print_to_out ("start", 'irc client', self.configfile, "IRC Bot")
     self.lastmessage=""
     self.lastmessage2=""
     self.lastmessage3=""
     self.lastAntiSpam = 0
   def getConfig(self):
+    path = os.getcwd()
+    self.configfile = path + "/Marvin.cfg"
     self.config = configparser.ConfigParser()
     self.config.read(self.configfile)
     self.conf = dict()
     self.conf['nick'] = self.config.get('config','nick')
-    self.conf['chan'] = self.config.get('config','chan')
-    self.conf['channels'] = [self.conf['chan']]
+    self.conf['chans'] = json.loads(self.config.get('config','chans'))
+    self.conf['noresponse'] = json.loads(self.config.get('config','noresponse'))
+    self.conf['password'] = self.config.get('config','password')
     self.conf['phraseWelcome'] = self.config.get('config','phrase_welcome')
     self.conf['insultes'] = json.loads(self.config.get('config','insultes'))
     self.conf['punch'] = json.loads(self.config.get('config','punch'))
@@ -46,9 +48,14 @@ class Bot(irc.bot.SingleServerIRCBot):
      c.nick(c.get_nickname() + "_")
      self.conf['nick'] = self.conf['nick'] + "_"
   def on_welcome(self, connection, event):
-    connection.join(self.conf['chan'])
-    self.print_to_out ("welcome", self.conf['chan'], self.conf['nick'], "/join " + self.conf['chan'])
-    self.do_privmsg(connection, self.conf['chan'], self.conf['phraseWelcome'])
+    self.do_privmsg(connection, 'NickServ', 'IDENTIFY ' + self.conf['password'])
+    for chan in self.conf['chans']:
+      #self.do_privmsg(connection, 'chanserv', "help")
+      #connection.send_raw("PRIVMSG %s :%s" % ('chanserv', "REGISTER " + chan + " " + self.conf['password']))
+      connection.join(chan)
+      self.print_to_out ("welcome", chan, self.conf['nick'], "/join " + chan)
+      self.do_privmsg(connection, 'ChanServ', "OP " + chan)
+      self.do_privmsg(connection, chan, self.conf['phraseWelcome'])
   def on_mode(self, connection, event):
     self.getConfig()
     source = event.source
@@ -60,7 +67,7 @@ class Bot(irc.bot.SingleServerIRCBot):
       target = args[1]
     except IndexError:
       target = None
-    if canal == self.conf['chan'] and mode == "+o" and target == self.conf['nick']:
+    if auteur.lower() != 'chanserv' and mode == "+o" and target == self.conf['nick']:
       self.do_privmsg(connection, canal, "Merci " + auteur)
   def on_pubmsg(self, connection, event):
     self.getConfig()
@@ -95,8 +102,8 @@ class Bot(irc.bot.SingleServerIRCBot):
               connection.action(chan, punch + auteur)
             break
         if insulte == 0:
-          if "bonjour " in message.lower() and self.conf['nick'].lower() in message.lower():
-             if auteur == "C-3PO":
+          if ("bonjour" in message.lower() or "salut" in message.lower()) and self.conf['nick'].lower() in message.lower():
+             if auteur == "otherbot":
                messageResp = "Salut copain !"
              else:
                messageResp = "Bonjour " + auteur
@@ -124,7 +131,12 @@ class Bot(irc.bot.SingleServerIRCBot):
             reponseArr=reponse.split('|||')
             messageResp = reponseArr[randint(0,len(reponseArr)-1)].replace('$auteur$',auteur)
       #print ("messageResp Avant Anti spam : " + messageResp)
-      if time.time() - self.lastAntiSpam < 3600:
+      diffSpam = round(time.time() - self.lastAntiSpam)
+      #self.print_to_out("debug", self.conf['nick'], auteur, "time.time() : " + str(time.time()))
+      #self.print_to_out("debug", self.conf['nick'], auteur, "self.lastAntiSpam : " + str(self.lastAntiSpam))
+      #self.print_to_out("debug", self.conf['nick'], auteur, "diffSpam : " + str(diffSpam))
+      if diffSpam < 3600:
+        #self.print_to_out("debug", self.conf['nick'], auteur, "messageResp Avant Anti spam : " + messageResp)
         if messageResp == self.lastmessage3:
           messageResp = ""
         elif messageResp == self.lastmessage2:
@@ -146,8 +158,10 @@ class Bot(irc.bot.SingleServerIRCBot):
       #print ("self.lastmessage2 : " + self.lastmessage2)
       #print ("self.lastmessage3 : " + self.lastmessage3)
       if messageResp is not "":
+        #self.print_to_out("debug", self.conf['nick'], auteur, "messageResp Apres Anti spam : " + messageResp)
         self.do_privmsg(connection, chan, messageResp)
         self.lastmessage = messageResp
+      self.lastAntiSpam = time.time()
   def on_join(self, connection, event):
     #print ("connection")
     #print (vars(connection))
@@ -156,17 +170,37 @@ class Bot(irc.bot.SingleServerIRCBot):
     chan = event.target
     source = event.source
     auteur = event.source.nick
-    if (auteur in self.conf['admins']):
+    self.print_to_out("join", chan, auteur, "has join")
+    if (source in self.conf['admins']):
+      self.print_to_out("mode", chan, auteur, "+o")
       connection.mode(chan, " +o " + auteur)
       if auteur == "otherbot":
         self.do_privmsg(connection, chan, "Salut copain !")
+  def on_pubnotice(self, connection, event):
+    message = event.arguments[0]
+    source = event.source
+    auteur = event.source.nick
+    chan = event.target
+    if auteur not in self.conf['noresponse']:
+      self.on_privmsg(connection, event)
+    else:
+      self.print_to_out("pubnotice", chan, auteur,message)
+  def on_privnotice(self, connection, event):
+    message = event.arguments[0]
+    source = event.source
+    auteur = event.source.nick
+    chan = event.target
+    if auteur not in self.conf['noresponse']:
+      self.on_privmsg(connection, event)
+    else:
+      self.print_to_out("pubnotice", chan, auteur,message)
   def on_privmsg(self, connection, event):
-    chan = self.conf['chan']
     source = event.source
     auteur = event.source.nick
     message = event.arguments[0]
     arguments = message.split(" ")
     source = event.source
+    #self.print_to_out("debug", "toto", auteur, vars(connection))
     trouve = 0
     isAdmin = 0
     self.print_to_out ("privmsg", self.conf['nick'], auteur, message)
@@ -203,21 +237,27 @@ class Bot(irc.bot.SingleServerIRCBot):
               time.sleep(0.1)
           elif '&dire' in arguments[0]:
             self.do_privmsg(connection, auteur, "dire : " + message[5:].strip())
-            self.do_privmsg(connection, chan, message[5:])
+            self.do_privmsg(connection, self.conf['chans'][0], message[5:])
+          elif '&msg' in arguments[0]:
+            chan = arguments[1]
+            message = " ".join(arguments[2:len(arguments)])
+            self.do_privmsg(connection, auteur, "destinataire " + chan + " message: " + message)
+            self.do_privmsg(connection, chan, message)
           elif '&action' in arguments[0]:
-            connection.action(chan, message[7:].strip())
+            connection.action(self.conf['chans'][0], message[7:].strip())
           elif '&mode' in arguments[0]:
-            connection.mode(chan, message[5:])
+            connection.mode(self.conf['chans'][0], message[5:])
           elif '&carrement!' in arguments[0]:
             if len(arguments) > 1:
               temps = int(arguments[1])
             else:
               temps = 10
-            connection.part(self.conf['chan'], "A dans " + str(temps) + "secondes !")
+            connection.part(self.conf['chans'], "A_dans_" + str(temps) + "_secondes_!")
             time.sleep(temps)
-            connection.join(self.conf['chan'])
+            for chan in self.conf['chans']:
+              connection.join(chan)
           elif '&exit' in arguments[0]:
-            connection.disconnect("A la prochaine bye")
+            connection.die("A la prochaine bye")
     if message == "help" or message == "aide":
       self.do_privmsg(connection, auteur, "Commandes : ")
       self.do_privmsg(connection, auteur, "aide : affiche cette aide ")
@@ -225,10 +265,11 @@ class Bot(irc.bot.SingleServerIRCBot):
       self.do_privmsg(connection, auteur, "stats : affiche les stats ")
       if isAdmin == 1:
         self.do_privmsg(connection, auteur, "&config : relit la configuration et l'affiche")
-        self.do_privmsg(connection, auteur, "&dire<message> : envoie un message dans "+self.conf['chan'])
-        self.do_privmsg(connection, auteur, "&action<message> : envoie un /me dans "+self.conf['chan'])
-        self.do_privmsg(connection, auteur, "&mode : envoie un /mode dans "+self.conf['chan'])
-        self.do_privmsg(connection, auteur, "&carrement!<x> : envoie un /part dans "+self.conf['chan']+" et se reconnecte x secondes après, par défaut 10")
+        self.do_privmsg(connection, auteur, "&dire<message> : envoie un message dans "+self.conf['chans'][0])
+        self.do_privmsg(connection, auteur, "&msg <destinataire> <message> : envoie message a destinataire (peut être un #chan)")
+        self.do_privmsg(connection, auteur, "&action<message> : envoie un /me dans "+self.conf['chans'][0])
+        self.do_privmsg(connection, auteur, "&mode : envoie un /mode dans "+self.conf['chans'][0])
+        self.do_privmsg(connection, auteur, "&carrement! <x> : envoie un /part dans "+ ", ".join(self.conf['chans']) +" et se reconnecte x secondes après, par défaut 10")
         self.do_privmsg(connection, auteur, "&exit : deconnecte le bot")
     elif trouve == 0 and isAdmin == 0:
         self.do_privmsg(connection, auteur, "Ho !!! Je suis un bot !!!! Et vous n'etes pas admin !" + auteur)
@@ -242,6 +283,7 @@ class Bot(irc.bot.SingleServerIRCBot):
   def print_to_out(self, type, chan, auteur, message):
     i = datetime.datetime.now()
     print ("%s : %s : %s : %s : %s" % (i, type, chan, auteur, message))
+    sys.stdout.flush()
 
 if __name__ == "__main__":
     Bot().start()
